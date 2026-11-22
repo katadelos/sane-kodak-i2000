@@ -1,0 +1,3 @@
+[submodule "vendor/sane-backends"]
+	path = vendor/sane-backends
+	url = https://gitlab.com/sane-project/backends.git

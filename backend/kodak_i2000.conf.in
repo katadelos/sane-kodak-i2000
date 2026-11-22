@@ -1,0 +1,22 @@
+# Native Kodak i2000 backend.
+#
+# The IDs are preserved from the vendor package.  The backend uses only
+# sanei_usb and does not load the vendor TWAIN/OpenUSB stack.
+#
+# True physical-cold startup needs the volatile firmware images embedded in
+# the exact Kodak i2000 v4.14 devicemanager container.  The file is parsed as
+# data, never executed, and every required i2400 resource is size- and
+# SHA-256-checked.  Persistent booter/flash updates are never performed.  This
+# volatile path is live-verified on the i2400.  Prefer a compact bundle made
+# once from a locally obtained vendor container:
+# kodak-i2000-fw extract /opt/kodak/kds_i2000/lib/devicemanager.so \
+#     /var/lib/sane/i2400-v4.14.kfw
+# Uncomment only when cold-start recovery is required; warm scanners do not
+# read or stage the bundle.  The original devicemanager.so is also accepted.
+# firmware-source /var/lib/sane/i2400-v4.14.kfw
+usb 0x040a 0x601c
+usb 0x29cc 0x100a
+usb 0x040a 0x601d
+usb 0x29cc 0x100b
+usb 0x040a 0x601e
+usb 0x29cc 0x100c

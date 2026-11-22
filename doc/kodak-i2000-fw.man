@@ -1,0 +1,51 @@
+.TH kodak-i2000-fw 1 "27 Aug 2026" "kodak_i2000" "SANE Scanner Access Now Easy"
+.IX kodak-i2000-fw
+.SH NAME
+kodak-i2000-fw \- verify or extract Kodak i2400 volatile firmware
+.SH SYNOPSIS
+.B kodak-i2000-fw verify
+.I source
+.PP
+.B kodak-i2000-fw extract
+.I source output
+.SH DESCRIPTION
+.B kodak-i2000-fw
+authenticates the exact Kodak i2400 v4.14 firmware resources used by the
+native
+.B kodak_i2000
+backend. The source may be the vendor's devicemanager container or an existing
+compact bundle. Proprietary firmware is not distributed with SANE.
+.PP
+The
+.B extract
+command writes a compact, non-executable bundle containing only the seven
+images used by volatile i2400 startup: LOADER, FPGA, SCANNER0 through SCANNER3,
+and SCANNER. It omits the device-manager ELF code, BOOTER, BOOTIMAGE, and
+unrelated resources. The output is created with mode 0600 and extraction
+refuses to overwrite an existing file.
+.PP
+Before accepting either format, the tool checks the i2400 package identity,
+expected sizes, and compiled-in SHA-256 values. The compact format additionally
+binds the USB identity and scanner version in a versioned header, includes a
+whole-payload digest, and is rechecked resource by resource when opened.
+.SH CONFIGURATION
+Set
+.B firmware-source
+in
+.I kodak_i2000.conf
+to the compact output path. The backend reads it only when the attached
+040a:601c i2400 reports firmware ID zero, one, or two. A warm scanner at
+firmware ID three does not stage the file.
+.PP
+The supported path is volatile. The tool and backend do not implement
+persistent booter programming, flash writes, NVRAM writes, or the external
+SCANNERX override.
+.SH EXAMPLE
+.nf
+kodak-i2000-fw extract /opt/kodak/kds_i2000/lib/devicemanager.so \
+  /var/lib/sane/i2400-v4.14.kfw
+kodak-i2000-fw verify /var/lib/sane/i2400-v4.14.kfw
+.fi
+.SH SEE ALSO
+.BR sane (7),
+.BR scanimage (1)

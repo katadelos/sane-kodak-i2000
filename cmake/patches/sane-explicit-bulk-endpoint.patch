@@ -1,0 +1,153 @@
+diff --git a/include/sane/sanei_usb.h b/include/sane/sanei_usb.h
+index f6597c828..8d2bb6492 100644
+--- a/include/sane/sanei_usb.h
++++ b/include/sane/sanei_usb.h
+@@ -412,6 +412,27 @@ extern SANE_Status sanei_usb_reset (SANE_Int dn);
+ extern SANE_Status
+ sanei_usb_read_bulk (SANE_Int dn, SANE_Byte * buffer, size_t * size);
+ 
++/** Initiate a bulk transfer read from an explicit endpoint.
++ *
++ * This is intended for devices which stream independent images on multiple
++ * bulk-in endpoints at the same time.  Unlike sanei_usb_set_endpoint(), it
++ * does not mutate device-global endpoint state and is therefore safe for
++ * concurrent reads against a thread-safe USB implementation.  USB
++ * record/replay and transports without selectable endpoints are unsupported.
++ *
++ * @param dn device number
++ * @param endpoint bulk-in endpoint address, including the direction bit
++ * @param buffer buffer to store read data in
++ * @param size size of the data; replaced by the number of bytes read
++ *
++ * A libusb transfer that reports an error together with partial payload data
++ * returns that payload as a successful short read.  Callers must still
++ * validate their protocol framing before accepting the result.
++ */
++extern SANE_Status
++sanei_usb_read_bulk_endpoint (SANE_Int dn, SANE_Byte endpoint,
++                              SANE_Byte * buffer, size_t * size);
++
+ /** Initiate a bulk transfer write.
+  *
+  * Write up to size bytes from buffer to the device. After the write size
+diff --git a/sanei/sanei_usb.c b/sanei/sanei_usb.c
+index f91cb793f..36b8201be 100644
+--- a/sanei/sanei_usb.c
++++ b/sanei/sanei_usb.c
+@@ -49,6 +49,7 @@
+ #ifdef HAVE_STDINT_H
+ # include <stdint.h>
+ #endif
++#include <limits.h>
+ #include <stdlib.h>
+ #include <ctype.h>
+ #include <sys/types.h>
+@@ -3519,6 +3520,108 @@ sanei_usb_read_bulk (SANE_Int dn, SANE_Byte * buffer, size_t * size)
+   return SANE_STATUS_GOOD;
+ }
+ 
++SANE_Status
++sanei_usb_read_bulk_endpoint (SANE_Int dn, SANE_Byte endpoint,
++                              SANE_Byte * buffer, size_t * size)
++{
++  ssize_t read_size = 0;
++
++  if (!size)
++    {
++      DBG (1, "%s: size == NULL\n", __func__);
++      return SANE_STATUS_INVAL;
++    }
++  if (!buffer || *size == 0 || *size > (size_t) INT_MAX)
++    {
++      DBG (1, "%s: invalid buffer or transfer size %lu\n", __func__,
++           (unsigned long) *size);
++      return SANE_STATUS_INVAL;
++    }
++  if (dn >= device_number || dn < 0)
++    {
++      DBG (1, "%s: device number %d is outside [0, %d)\n", __func__, dn,
++           device_number);
++      return SANE_STATUS_INVAL;
++    }
++  if (!endpoint || !(endpoint & USB_DIR_IN))
++    {
++      DBG (1, "%s: 0x%02x is not a bulk-in endpoint address\n", __func__,
++           endpoint);
++      return SANE_STATUS_INVAL;
++    }
++  if (testing_mode != sanei_usb_testing_mode_disabled)
++    {
++      DBG (1, "%s: explicit endpoints are unavailable in USB record/replay mode\n",
++           __func__);
++      return SANE_STATUS_UNSUPPORTED;
++    }
++
++  DBG (5, "%s: trying to read %lu bytes from endpoint 0x%02x\n", __func__,
++       (unsigned long) *size, endpoint);
++
++  if (devices[dn].method != sanei_usb_method_libusb)
++    {
++      DBG (1, "%s: access method %d has no selectable bulk endpoint\n",
++           __func__, devices[dn].method);
++      return SANE_STATUS_UNSUPPORTED;
++    }
++
++#ifdef HAVE_LIBUSB_LEGACY
++  read_size = usb_bulk_read (devices[dn].libusb_handle, endpoint,
++                             (char *) buffer, (int) *size, libusb_timeout);
++  if (read_size < 0)
++    DBG (1, "%s: read failed: %s\n", __func__, strerror (errno));
++#elif defined(HAVE_LIBUSB)
++  {
++    int ret;
++    int transferred = 0;
++
++    ret = libusb_bulk_transfer (devices[dn].lu_handle, endpoint, buffer,
++                                (int) *size, &transferred, libusb_timeout);
++    if (ret < 0)
++      {
++        DBG (1, "%s: read failed (still got %d bytes): %s\n", __func__,
++             transferred, sanei_libusb_strerror (ret));
++        /* libusb may report a terminal condition (notably an overflow on
++         * this scanner's short final URB) together with valid payload bytes.
++         * Preserve those bytes.  The caller can validate its frame/footer,
++         * and a later transfer will expose any persistent endpoint error. */
++        read_size = transferred > 0 && (size_t) transferred <= *size
++                      ? transferred : -1;
++      }
++    else
++      read_size = transferred;
++  }
++#else
++  DBG (1, "%s: libusb support missing\n", __func__);
++  return SANE_STATUS_UNSUPPORTED;
++#endif
++
++  if (read_size < 0)
++    {
++      *size = 0;
++#ifdef HAVE_LIBUSB_LEGACY
++      usb_clear_halt (devices[dn].libusb_handle, endpoint);
++#elif defined(HAVE_LIBUSB)
++      libusb_clear_halt (devices[dn].lu_handle, endpoint);
++#endif
++      return SANE_STATUS_IO_ERROR;
++    }
++  if (read_size == 0)
++    {
++      DBG (3, "%s: read returned EOF on endpoint 0x%02x\n", __func__,
++           endpoint);
++      *size = 0;
++      return SANE_STATUS_EOF;
++    }
++  if (debug_level > 10)
++    print_buffer (buffer, read_size);
++  DBG (5, "%s: wanted %lu bytes, got %ld from endpoint 0x%02x\n", __func__,
++       (unsigned long) *size, (unsigned long) read_size, endpoint);
++  *size = read_size;
++  return SANE_STATUS_GOOD;
++}
++
+ #if WITH_USB_RECORD_REPLAY
+ static int sanei_usb_record_write_bulk(xmlNode* node, SANE_Int dn,
+                                        const SANE_Byte* buffer,
